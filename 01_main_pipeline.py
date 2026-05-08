@@ -3,7 +3,7 @@
 ANTIVENOM PROTEIN DESIGN PIPELINE
 Workflow: PDB Input → LLM Sequences → ProteinMPNN → AlphaFold → Comparison
 
-Author: Anirban
+Author:Anirban
 Project: Computational Antivenom Design
 """
 
