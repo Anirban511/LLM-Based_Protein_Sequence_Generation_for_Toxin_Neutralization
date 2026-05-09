@@ -3,7 +3,7 @@
 ANTIVENOM PROTEIN DESIGN PIPELINE
 Workflow: PDB Input → LLM Sequences → ProteinMPNN → AlphaFold → Comparison
 
-Author:Anirban
+Author: Anirban
 Project: Computational Antivenom Design
 """
 
@@ -24,12 +24,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import LLM sequence generator (no API key required)
+# Import LLM sequence generator using ProtGPT2 (no API key required)
 try:
-    from llm_sequence_generator_no_api import LLMSequenceGeneratorNoAPI
+    from llm_sequence_generator_protgpt2 import LLMSequenceGeneratorNoAPI, ProtGPT2Lite
 except ImportError:
-    logger.warning("llm_sequence_generator_no_api not found. Make sure it's in the same directory.")
+    logger.warning("llm_sequence_generator_protgpt2 not found. Make sure it's in the same directory.")
     LLMSequenceGeneratorNoAPI = None
+    ProtGPT2Lite = None
 
 
 @dataclass
@@ -61,11 +62,14 @@ class PDBHandler:
         self.pdb_file = self.output_dir / f"{pdb_id}.pdb"
     
     def download_pdb(self):
-        """Download PDB structure from RCSB"""
+        """Download PDB structure from RCSB (skips if already cached locally)"""
+        if self.pdb_file.exists():
+            logger.info(f"✓ Using cached PDB file: {self.pdb_file}")
+            return True
+
         logger.info(f"Downloading PDB structure: {self.pdb_id}")
-        
         url = f"https://files.rcsb.org/download/{self.pdb_id}.pdb"
-        
+
         try:
             import urllib.request
             urllib.request.urlretrieve(url, self.pdb_file)
@@ -269,21 +273,37 @@ class AntivenemPipeline:
             logger.error("Failed to obtain valid PDB structure")
             return None
         
-        # STEP 2: LLM sequence generation (using intelligent algorithms, no API key needed)
-        logger.info("\n[STEP 2] Generating LLM sequences (using consensus method)...")
+        # STEP 2: LLM sequence generation using ProtGPT2 (no API key needed)
+        logger.info("\n[STEP 2] Generating LLM sequences using ProtGPT2...")
         toxin_info = {
             'type': '3FTx',
             'binding_residues': 'Acetylcholine binding pocket',
             'target': 'Neuromuscular junction'
         }
         
+        llm_sequences = []
+        
         if LLMSequenceGeneratorNoAPI is None:
-            logger.error("✗ llm_sequence_generator_no_api module not found!")
-            logger.error("  Please copy llm_sequence_generator_no_api.py to the same directory")
-            llm_sequences = []
+            logger.error("✗ llm_sequence_generator_protgpt2 module not found!")
+            logger.error("  Please copy llm_sequence_generator_protgpt2.py to the same directory")
         else:
-            llm_gen = LLMSequenceGeneratorNoAPI(method='consensus')
-            llm_sequences = llm_gen.generate_antivenom_sequences(toxin_info, num_sequences)
+            try:
+                # Try full ProtGPT2 model
+                llm_gen = LLMSequenceGeneratorNoAPI(method='protgpt2')
+                llm_sequences = llm_gen.generate_antivenom_sequences(toxin_info, num_sequences)
+                
+                # If model failed or no sequences generated, use lite mode
+                if not llm_sequences and ProtGPT2Lite is not None:
+                    logger.warning("⚠️  ProtGPT2 model generation failed, using lite mode...")
+                    llm_sequences = ProtGPT2Lite.generate_sequences(num_sequences=num_sequences)
+                    
+            except Exception as e:
+                logger.warning(f"⚠️  ProtGPT2 model error: {e}")
+                if ProtGPT2Lite is not None:
+                    logger.info("  Falling back to lite mode...")
+                    llm_sequences = ProtGPT2Lite.generate_sequences(num_sequences=num_sequences)
+                else:
+                    logger.error("  Lite mode also not available")
         
         # STEP 3: ProteinMPNN generation
         logger.info("\n[STEP 3] Generating ProteinMPNN sequences...")
@@ -334,11 +354,110 @@ class AntivenemPipeline:
         return report
     
     def _save_results(self, report: Dict):
-        """Save results to JSON"""
+        """Save results to JSON and generate analysis plots"""
         output_file = self.output_dir / "results.json"
         with open(output_file, 'w') as f:
             json.dump(report, f, indent=2)
         logger.info(f"✓ Results saved to {output_file}")
+        self._generate_plots(report)
+
+    def _generate_plots(self, report: Dict):
+        """Generate 4 analysis plots and save to results/analysis_plots.png"""
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Patch
+        except ImportError:
+            logger.warning("matplotlib not installed — skipping plot generation. Run: pip install matplotlib")
+            return
+
+        llm_seqs = report.get('llm_sequences', [])
+        mpnn_seqs = report.get('mpnn_sequences', [])
+
+        if not llm_seqs and not mpnn_seqs:
+            logger.warning("No sequence data available for plotting")
+            return
+
+        colors = {'LLM': '#2196F3', 'ProteinMPNN': '#4CAF50'}
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle('Antivenom Design Pipeline — Analysis Results', fontsize=14, fontweight='bold')
+
+        # Plot 1: Average pLDDT per sequence (LLM vs ProteinMPNN)
+        ax1 = axes[0, 0]
+        llm_plddt = [s.get('avg_plddt') or 0 for s in llm_seqs]
+        mpnn_plddt = [s.get('avg_plddt') or 0 for s in mpnn_seqs]
+        if llm_plddt:
+            ax1.bar([i - 0.2 for i in range(len(llm_plddt))], llm_plddt,
+                    width=0.4, label='LLM', color=colors['LLM'], alpha=0.85)
+        if mpnn_plddt:
+            ax1.bar([i + 0.2 for i in range(len(mpnn_plddt))], mpnn_plddt,
+                    width=0.4, label='ProteinMPNN', color=colors['ProteinMPNN'], alpha=0.85)
+        ax1.axhline(y=70, color='red', linestyle='--', linewidth=1, alpha=0.6, label='Quality threshold (70)')
+        ax1.set_title('1. Composite Score Comparison (avg pLDDT)', fontsize=10)
+        ax1.set_xlabel('Sequence Index')
+        ax1.set_ylabel('Average pLDDT Score')
+        ax1.set_ylim(0, 100)
+        ax1.legend(fontsize=8)
+        ax1.grid(axis='y', alpha=0.3)
+
+        # Plot 2: pLDDT confidence distribution (per-residue histogram)
+        ax2 = axes[0, 1]
+        all_llm_plddt = [score for s in llm_seqs for score in (s.get('plddt_scores') or [])]
+        all_mpnn_plddt = [score for s in mpnn_seqs for score in (s.get('plddt_scores') or [])]
+        if all_llm_plddt:
+            ax2.hist(all_llm_plddt, bins=20, alpha=0.65, label='LLM', color=colors['LLM'])
+        if all_mpnn_plddt:
+            ax2.hist(all_mpnn_plddt, bins=20, alpha=0.65, label='ProteinMPNN', color=colors['ProteinMPNN'])
+        ax2.axvline(x=70, color='red', linestyle='--', linewidth=1, alpha=0.6, label='Good confidence (70)')
+        ax2.set_title('2. pLDDT Confidence Distribution', fontsize=10)
+        ax2.set_xlabel('pLDDT Score (per residue)')
+        ax2.set_ylabel('Frequency')
+        ax2.legend(fontsize=8)
+        ax2.grid(alpha=0.3)
+
+        # Plot 3: Sequence length distribution
+        ax3 = axes[1, 0]
+        all_seqs = llm_seqs + mpnn_seqs
+        lengths = [s.get('length', 0) or 0 for s in all_seqs]
+        bar_colors = [colors[s.get('method', 'LLM')] for s in all_seqs]
+        labels = [f"{'L' if s.get('method') == 'LLM' else 'M'}{i+1}" for i, s in enumerate(all_seqs)]
+        ax3.bar(range(len(lengths)), lengths, color=bar_colors, alpha=0.85)
+        ax3.set_title('3. Sequence Length Distribution', fontsize=10)
+        ax3.set_xlabel('Sequence')
+        ax3.set_ylabel('Length (amino acids)')
+        ax3.set_xticks(range(len(labels)))
+        ax3.set_xticklabels(labels, fontsize=8)
+        ax3.grid(axis='y', alpha=0.3)
+        ax3.legend(handles=[
+            Patch(facecolor=colors['LLM'], label='LLM'),
+            Patch(facecolor=colors['ProteinMPNN'], label='ProteinMPNN')
+        ], fontsize=8)
+
+        # Plot 4: Score breakdown by category (pLDDT, cysteine, hydrophobicity)
+        ax4 = axes[1, 1]
+        plddts = [s.get('avg_plddt') or 0 for s in all_seqs]
+        cys_scores = [min((s.get('cysteine_count') or 0) * 10, 100) for s in all_seqs]
+        hydro_scores = [(((s.get('hydrophobicity_score') or 0) + 4.5) / 9.0) * 100 for s in all_seqs]
+        x_pos = np.arange(len(labels))
+        width = 0.25
+        ax4.bar(x_pos - width, plddts, width, label='pLDDT (structure)', color='#FF9800', alpha=0.85)
+        ax4.bar(x_pos, cys_scores, width, label='Cysteine score', color='#9C27B0', alpha=0.85)
+        ax4.bar(x_pos + width, hydro_scores, width, label='Hydrophobicity', color='#F44336', alpha=0.85)
+        ax4.set_title('4. Score Breakdown by Category', fontsize=10)
+        ax4.set_xlabel('Sequence')
+        ax4.set_ylabel('Score (normalized 0-100)')
+        ax4.set_xticks(x_pos)
+        ax4.set_xticklabels(labels, fontsize=8)
+        ax4.set_ylim(0, 100)
+        ax4.legend(fontsize=7)
+        ax4.grid(axis='y', alpha=0.3)
+
+        plt.tight_layout()
+        plot_file = self.output_dir / "analysis_plots.png"
+        plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"✓ Analysis plots saved to {plot_file}")
 
 
 if __name__ == "__main__":
