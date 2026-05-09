@@ -1,4 +1,4 @@
-# Antivenom_Synthesis_using_Deep_learning
+# LLM-Based Protein Sequence Generation for Toxin Neutralization
 -Fine-tuned transformer-based protein language models (ProtGPT2/ESM2) on curated venom toxin datasets (UniProt) using HuggingFace, achieving low perplexity (~8–12) and strong sequence learning convergence.
 
 -Generated novel protein sequences conditioned on toxin-binding motifs and evaluated structural feasibility via AlphaFold/ColabFold with >80% of candidates showing stable folds (pLDDT > 70).
