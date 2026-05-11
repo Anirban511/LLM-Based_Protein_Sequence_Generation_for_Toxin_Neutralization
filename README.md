@@ -1,8 +1,5 @@
 # COMPLETE SETUP & EXECUTION GUIDE
 ## Antivenom Protein Design Pipeline (ProtGPT2-Based)
-
----
-
 ## 📋 TABLE OF CONTENTS
 
 1. [System Requirements](#system-requirements)
